@@ -239,13 +239,6 @@ public final class Target_jdk_jfr_internal_JVM {
         SubstrateJVM.get().setMemorySize(size);
     }
 
-    /** See {@code JVM#setMethodSamplingInterval}. */
-    @Substitute
-    @TargetElement(onlyWith = JDK17OrEarlier.class)
-    public void setMethodSamplingInterval(long type, long intervalMillis) {
-        SubstrateJVM.get().setMethodSamplingInterval(type, intervalMillis);
-    }
-
     /** See {@code JVM#setMethodSamplingPeriod}. */
     @Substitute
     @TargetElement(onlyWith = JDK19OrLater.class)
