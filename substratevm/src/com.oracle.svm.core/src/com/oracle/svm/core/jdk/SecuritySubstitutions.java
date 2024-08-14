@@ -28,6 +28,7 @@ import static com.oracle.svm.core.snippets.KnownIntrinsics.readCallerStackPointe
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
+import java.lang.ref.ReferenceQueue;
 import java.net.URL;
 import java.security.AccessControlContext;
 import java.security.CodeSource;
@@ -348,17 +349,15 @@ final class Target_javax_crypto_JceSecurity {
     // value == PROVIDER_VERIFIED is successfully verified
     // value is failure cause Exception in error case
     @Alias //
-    @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Custom, declClass = VerificationCacheTransformer.class, disableCaching = true) //
     private static Map<Object, Object> verificationResults;
 
     @Alias //
     @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Reset) //
     private static Map<Provider, Object> verifyingProviders;
 
-    @Substitute
-    static void verifyProvider(URL codeBase, Provider p) {
-        throw JceSecurityUtil.shouldNotReach("javax.crypto.JceSecurity.verifyProviderJar(URL, Provider)");
-    }
+    @Alias //
+    @TargetElement //
+    private static ReferenceQueue<Object> queue;
 
     @Substitute
     static URL getCodeBase(final Class<?> clazz) {
@@ -368,7 +367,8 @@ final class Target_javax_crypto_JceSecurity {
     @Substitute
     static Exception getVerificationResult(Provider p) {
         /* Start code block copied from original method. */
-        Object o = verificationResults.get(JceSecurityUtil.providerKey(p));
+        Object key = new Target_javax_crypto_JceSecurity_WeakIdentityWrapper(p, queue);
+        Object o = verificationResults.get(key);
         if (o == PROVIDER_VERIFIED) {
             return null;
         } else if (o != null) {
@@ -384,24 +384,13 @@ final class Target_javax_crypto_JceSecurity {
         throw VMError.unsupportedFeature("Trying to verify a provider that was not registered at build time: " + p + ". " +
                         "All providers must be registered and verified in the Native Image builder. ");
     }
-
-    private static class VerificationCacheTransformer implements FieldValueTransformer {
-        @Override
-        public Object transform(Object receiver, Object originalValue) {
-            return SecurityProvidersFilter.instance().cleanVerificationCache(originalValue);
-        }
-    }
 }
 
-@TargetClass(className = "javax.crypto.JceSecurity", innerClass = "IdentityWrapper", onlyWith = JDK17OrLater.class)
+@TargetClass(className = "javax.crypto.JceSecurity", innerClass = "WeakIdentityWrapper", onlyWith = JDK17OrLater.class)
 @SuppressWarnings({"unused"})
-final class Target_javax_crypto_JceSecurity_IdentityWrapper {
+final class Target_javax_crypto_JceSecurity_WeakIdentityWrapper {
     @Alias //
-    Provider obj;
-
-    @Alias //
-    Target_javax_crypto_JceSecurity_IdentityWrapper(Provider obj) {
-        this.obj = obj;
+    Target_javax_crypto_JceSecurity_WeakIdentityWrapper(Provider obj, ReferenceQueue<Object> queue) {
     }
 }
 
@@ -428,24 +417,6 @@ class JceSecurityAccessor {
         RANDOM = result;
         return result;
     }
-}
-
-final class JceSecurityUtil {
-
-    static Object providerKey(Provider p) {
-        if (JavaVersionUtil.JAVA_SPEC <= 11) {
-            return p;
-        }
-        /* Starting with JDK 17 the verification results map key is an identity wrapper object. */
-        return new Target_javax_crypto_JceSecurity_IdentityWrapper(p);
-    }
-
-    static RuntimeException shouldNotReach(String method) {
-        throw VMError.shouldNotReachHere(method + " is reached at runtime. " +
-                        "This should not happen. The contents of JceSecurity.verificationResults " +
-                        "are computed and cached at image build time.");
-    }
-
 }
 
 /**

@@ -314,7 +314,6 @@ public class SecurityServicesFeature extends JNIRegistrationUtil implements Inte
         BeforeAnalysisAccessImpl access = (BeforeAnalysisAccessImpl) a;
         loader = access.getImageClassLoader();
         jceSecurityClass = loader.findClassOrFail("javax.crypto.JceSecurity");
-        verificationCacheCleaner = constructVerificationCacheCleaner(jceSecurityClass);
 
         /* Ensure sun.security.provider.certpath.CertPathHelper.instance is initialized. */
         access.ensureInitialized("java.security.cert.TrustAnchor");
@@ -673,7 +672,7 @@ public class SecurityServicesFeature extends JNIRegistrationUtil implements Inte
     private static Function<String, Class<?>> getConstructorParameterClassAccessor(ImageClassLoader loader) {
         Map<String, /* EngineDescription */ Object> knownEngines = ReflectionUtil.readStaticField(Provider.class, "knownEngines");
         Class<?> clazz = loader.findClassOrFail("java.security.Provider$EngineDescription");
-        Field consParamClassNameField = ReflectionUtil.lookupField(clazz, "constructorParameterClassName");
+        Field consParamClassField = ReflectionUtil.lookupField(clazz, "constructorParameterClass");
 
         /*
          * The returned lambda captures the value of the Provider.knownEngines map retrieved above
@@ -698,10 +697,7 @@ public class SecurityServicesFeature extends JNIRegistrationUtil implements Inte
                 if (engineDescription == null) {
                     return null;
                 }
-                String constrParamClassName = (String) consParamClassNameField.get(engineDescription);
-                if (constrParamClassName != null) {
-                    return loader.findClass(constrParamClassName).get();
-                }
+                return (Class<?>) consParamClassField.get(engineDescription);
             } catch (IllegalAccessException e) {
                 VMError.shouldNotReachHere(e);
             }
@@ -853,61 +849,6 @@ public class SecurityServicesFeature extends JNIRegistrationUtil implements Inte
     private static void registerForReflection(Class<?> clazz) {
         RuntimeReflection.register(clazz);
         RuntimeReflection.register(clazz.getConstructors());
-    }
-
-    @SuppressWarnings("unchecked")
-    private Function<Object, Object> constructVerificationCacheCleaner(Class<?> jceSecurity) {
-        /*
-         * For JDK 11, the verification cache is a Provider -> Verification result IdentityHashMap.
-         */
-        if (JavaVersionUtil.JAVA_SPEC <= 11) {
-            return obj -> {
-                Map<Provider, Object> verificationResults;
-                synchronized (jceSecurity) {
-                    /*
-                     * Need to synchronize the iteration of JceSecurity.verificationResults. In the
-                     * original implementation verificationResults is always accessed and modified
-                     * via the static synchronized JceSecurity.getVerificationResult().
-                     *
-                     * Note that even if the value of the JceSecurity.verificationResults may be
-                     * modified concurrently it doesn't affect the correctness of the substitution.
-                     * Its value is never cached (by using RecomputeFieldValue.disableCaching) and
-                     * it will eventually reach a stable state, and it will be snapshotted. The
-                     * synchronization ensures that early reads of the field, that may happen
-                     * concurrently while verification results are still being added to the cache,
-                     * don't result in a ConcurrentModificationException.
-                     */
-                    verificationResults = new IdentityHashMap<>((Map<Provider, Object>) obj);
-                }
-                verificationResults.keySet().removeIf(this::shouldRemoveProvider);
-
-                return verificationResults;
-            };
-        }
-        /*
-         * For JDK 17 and later, the verification cache is an IdentityWrapper -> Verification result
-         * ConcurrentHashMap. The IdentityWrapper contains the actual provider in the 'obj' field.
-         */
-        Class<?> identityWrapper = loader.findClassOrFail("javax.crypto.JceSecurity$IdentityWrapper");
-        Field providerField = ReflectionUtil.lookupField(identityWrapper, "obj");
-
-        Predicate<Object> listRemovalPredicate = wrapper -> {
-            try {
-                return shouldRemoveProvider((Provider) providerField.get(wrapper));
-            } catch (IllegalAccessException e) {
-                throw VMError.shouldNotReachHere(e);
-            }
-        };
-
-        return obj -> {
-            Map<Object, Object> original = (Map<Object, Object>) obj;
-            Map<Object, Object> verificationResults = new ConcurrentHashMap<>(original);
-
-            verificationResults.keySet().removeIf(listRemovalPredicate);
-
-            return verificationResults;
-        };
-
     }
 
     private static boolean isSignature(Service s) {
